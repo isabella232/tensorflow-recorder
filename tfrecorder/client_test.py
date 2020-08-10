@@ -31,6 +31,9 @@ from tfrecorder import constants
 from tfrecorder import test_utils
 
 
+# pylint: disable=protected-access
+
+
 class ClientTest(unittest.TestCase):
   """Misc tests for `client` module."""
 
@@ -74,8 +77,19 @@ class ClientTest(unittest.TestCase):
         project=self.test_project)
     self.assertEqual(r, expected)
 
+  def test_path_split(self):
+    """Tests `_path_split`."""
 
-# pylint: disable=protected-access
+    filename = 'image_file.jpg'
+    dirpaths = ['/path/to/image/dir', 'gs://path/to/image/dir']
+    for dir_ in dirpaths:
+      filepath = os.path.join(dir_, filename)
+      act_dirpath, act_filename = client._path_split(filepath)
+      self.assertEqual(act_dirpath, dir_)
+      self.assertEqual(act_filename, filename)
+
+
+
 
 class InputValidationTest(unittest.TestCase):
   """'Tests for validation input data."""
@@ -193,6 +207,37 @@ def get_sample_image_csv_data() -> List[List[str]]:
   return [header] + content
 
 
+class ReadImageDirectoryTest(unittest.TestCase):
+  """Tests `_read_image_directory`."""
+
+  def setUp(self):
+    self.image_data = test_utils.get_test_df()
+
+  def test_normal(self):
+    """Tests conversion of expected directory structure on local machine."""
+
+    g = self.image_data.groupby([constants.SPLIT_KEY, constants.LABEL_KEY])
+
+    with tempfile.TemporaryDirectory() as image_dir:
+      tempfiles = []
+      rows = []
+      for (split, label), indices in g.groups.items():
+        dir_ = os.path.join(image_dir, split, label)
+        os.makedirs(dir_)
+        for f in list(self.image_data.loc[indices, constants.IMAGE_URI_KEY]):
+          _, name = os.path.split(f)
+          fp = tempfile.NamedTemporaryFile(
+              dir=dir_, suffix='.jpg', prefix=name)
+          tempfiles.append(fp)
+          rows.append([split, fp.name, label])
+
+      actual = client._read_image_directory(image_dir)
+      expected = pd.DataFrame(rows, columns=constants.IMAGE_CSV_COLUMNS)
+      pd.testing.assert_frame_equal(actual, expected)
+      for f in tempfiles:
+        f.close()
+
+
 class ReadCSVTest(unittest.TestCase):
   """Tests `read_csv`."""
 
@@ -259,6 +304,16 @@ class ToDataFrameTest(unittest.TestCase):
     names = list(self.input_df.columns[0:-1])
     actual = client.to_dataframe(self.input_df, names=names)
     pd.testing.assert_frame_equal(actual, self.input_df[names])
+
+  @mock.patch.object(client, '_read_image_directory')
+  def test_input_image_dir(self, mock_fn):
+    """Tests valid input image directory."""
+
+    mock_fn.return_value = self.input_df
+
+    with tempfile.TemporaryDirectory() as input_data:
+      actual = client.to_dataframe(input_data)
+      pd.testing.assert_frame_equal(actual, self.input_df)
 
   def test_error_invalid_inputs(self):
     """Tests error handling with different invalid inputs."""
